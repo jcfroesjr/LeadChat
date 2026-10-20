@@ -1,0 +1,236 @@
+## ChatbotX — stack de produção para EasyPanel
+##
+## Diferenças em relação ao docker-compose.yml (local):
+##  - Nenhuma porta publicada no host: o proxy do EasyPanel (Traefik) roteia
+##    para os containers pela rede interna usando serviço + porta.
+##  - Todos os segredos vêm do .env (nada hardcoded).
+##  - URLs públicas via variáveis APP_DOMAIN / REALTIME_DOMAIN / S3_DOMAIN.
+##  - Adminer e MailHog ficam no perfil "tools" (não sobem por padrão).
+##  - RUN_DB_SEED desligado após o primeiro boot (ver DEPLOY.md).
+
+x-network: &network
+  networks:
+    - main
+
+x-depends-datastores: &depends-datastores
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    filesystem:
+      condition: service_healthy
+
+x-environment: &common-vars
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?defina BETTER_AUTH_SECRET no .env}
+  BETTER_AUTH_URL: https://${APP_DOMAIN:?defina APP_DOMAIN no .env}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-chatbotx}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-chatbotx}?schema=public
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?defina ENCRYPTION_KEY no .env}
+  JAVASCRIPT_EXECUTOR_URL: http://javascript-executor:3210
+  JAVASCRIPT_EXECUTOR_TOKEN: ${JAVASCRIPT_EXECUTOR_TOKEN:?defina JAVASCRIPT_EXECUTOR_TOKEN no .env}
+  NEXT_PUBLIC_ASSET_URL: https://${S3_DOMAIN:?defina S3_DOMAIN no .env}/${S3_BUCKET:-chatbotx}/
+  NEXT_PUBLIC_BUILDER_URL: https://${APP_DOMAIN}
+  NEXT_PUBLIC_REALTIME_URL: https://${REALTIME_DOMAIN:?defina REALTIME_DOMAIN no .env}
+  NEXT_PUBLIC_EDITION: community
+  NODE_OPTIONS: "--max_old_space_size=${NODE_MAX_OLD_SPACE:-2048}"
+  REALTIME_API_KEY: ${REALTIME_API_KEY:?defina REALTIME_API_KEY no .env}
+  REALTIME_BROADCAST_SECRET: ${REALTIME_BROADCAST_SECRET:?defina REALTIME_BROADCAST_SECRET no .env}
+  REDIS_URL: redis://redis:6379
+  RUN_DB_MIGRATE: ${RUN_DB_MIGRATE:-true}
+  RUN_DB_SEED: ${RUN_DB_SEED:-false}
+  S3_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-chatbotx}
+  S3_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?defina RUSTFS_SECRET_KEY no .env}
+  S3_BUCKET: ${S3_BUCKET:-chatbotx}
+  S3_REGION: ${S3_REGION:-us-west-2}
+  # Upstream usa a chave com typo (S3_ENPOINT). Mantemos as duas para
+  # compatibilidade entre versões da imagem.
+  S3_ENPOINT: https://${S3_DOMAIN}
+  S3_ENDPOINT: https://${S3_DOMAIN}
+  SCHEDULER_BUCKET_RANGE: 0-255
+  SMTP_FROM: ${SMTP_FROM:?defina SMTP_FROM no .env}
+  SMTP_SERVER: ${SMTP_SERVER:?defina SMTP_SERVER no .env}
+
+x-rustfs-environment: &rustfs-environment
+  RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-chatbotx}
+  RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?defina RUSTFS_SECRET_KEY no .env}
+
+services:
+  postgres:
+    <<: *network
+    image: timescale/timescaledb-ha:pg18.4-ts2.27.2-all
+    restart: unless-stopped
+    volumes:
+      - db-data:/home/postgres/pgdata
+    command: ["postgres", "-c", "log_statement=${POSTGRES_LOG_STATEMENT:-none}"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chatbotx}
+      POSTGRES_USER: ${POSTGRES_USER:-chatbotx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    <<: *network
+    image: redis:8.8.0-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Armazenamento S3-compatível. Exponha via domínio S3_DOMAIN -> porta 9000.
+  filesystem:
+    <<: *network
+    image: rustfs/rustfs:1.0.0-beta.8
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      <<: *rustfs-environment
+    volumes:
+      - filesystem-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "curl -f http://127.0.0.1:9000/health && curl -f
+            http://127.0.0.1:9001/rustfs/console/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Cria o bucket e libera leitura pública em /public na primeira execução.
+  filesystem-init:
+    <<: *network
+    image: rustfs/rc:v0.1.22
+    restart: "no"
+    depends_on:
+      filesystem:
+        condition: service_healthy
+    environment:
+      <<: *rustfs-environment
+      S3_BUCKET: ${S3_BUCKET:-chatbotx}
+    entrypoint: >
+      /bin/sh -c "rc alias set local http://filesystem:9000
+      $${RUSTFS_ACCESS_KEY} $${RUSTFS_SECRET_KEY}; rc mb local/$${S3_BUCKET}
+      --ignore-existing; touch /tmp/empty && rc cp /tmp/empty
+      local/$${S3_BUCKET}/public/; rc anonymous set public
+      local/$${S3_BUCKET}/public;"
+
+  # App principal (Next.js). Exponha via APP_DOMAIN -> porta 3000.
+  builder:
+    <<: [*network, *depends-datastores]
+    image: ghcr.io/chatbotxio/chatbotx-builder:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      <<: *common-vars
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Processa filas BullMQ. Sem domínio.
+  worker:
+    image: ghcr.io/chatbotxio/chatbotx-worker:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    command: ["worker", "all"]
+    environment:
+      <<: *common-vars
+    networks:
+      - main
+      - javascript-executor-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      filesystem:
+        condition: service_healthy
+      javascript-executor:
+        condition: service_healthy
+
+  # Sandbox para JS autoral dos fluxos. Rede interna, sem domínio e sem porta.
+  # NÃO remova o isolamento (read_only, cap_drop, internal network).
+  javascript-executor:
+    image: ghcr.io/chatbotxio/chatbotx-javascript-executor:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    networks:
+      - javascript-executor-network
+    environment:
+      JAVASCRIPT_EXECUTOR_TOKEN: ${JAVASCRIPT_EXECUTOR_TOKEN:?defina JAVASCRIPT_EXECUTOR_TOKEN no .env}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-2}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "${JS_EXECUTOR_CPUS:-1}"
+          memory: ${JS_EXECUTOR_MEMORY:-512M}
+          pids: 128
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3210/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # WebSocket/PartyKit. Exponha via REALTIME_DOMAIN -> porta 1999.
+  # Habilite WebSocket no domínio dentro do EasyPanel.
+  realtime:
+    <<: *network
+    image: ghcr.io/chatbotxio/chatbotx-realtime:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    entrypoint: >
+      bash -c "
+        cd /app/apps/realtime;
+        echo \"REALTIME_BROADCAST_SECRET=$${REALTIME_BROADCAST_SECRET}\" > .env;
+        HOSTNAME=0.0.0.0 PORT=1999 pnpm dlx partykit dev;
+      "
+    environment:
+      <<: *common-vars
+
+  # ---- Ferramentas opcionais (perfil "tools") --------------------------
+  # Suba com: docker compose --profile tools up -d
+  # Nunca exponha o Adminer publicamente sem autenticação extra.
+  adminer:
+    <<: *network
+    image: adminer:5.4.2
+    restart: unless-stopped
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  main:
+    driver: bridge
+  javascript-executor-network:
+    driver: bridge
+    internal: true
+
+volumes:
+  db-data:
+  redis-data:
+  filesystem-data:

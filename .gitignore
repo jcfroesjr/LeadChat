@@ -1,0 +1,16 @@
+# Segredos — nunca versionar
+.env
+.env.*
+!.env.example
+
+# Overrides locais
+docker-compose.override.yml
+
+# Backups
+*.sql
+*.sql.gz
+backups/
+
+# Sistema
+.DS_Store
+Thumbs.db
