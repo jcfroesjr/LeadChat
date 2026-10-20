@@ -176,13 +176,18 @@ services:
     command: ["worker", "all"]
     environment:
       <<: *common-vars
-      # Heap próprio: o worker herdava 2048M do *common-vars e chegou a 3.2 GiB
-      # residentes numa VPS de 8 GB, empurrando a máquina para o swap.
-      NODE_OPTIONS: "--max_old_space_size=${WORKER_MAX_OLD_SPACE:-768}"
+      # ATENÇÃO: `worker all` sobe 14 processos Node num único container
+      # (ai-agent, chat, default, events, heavy, integration, low,
+      # notification, schedule, 3x sequence, trigger, webhook).
+      #
+      # Este heap vale POR PROCESSO, não para o container inteiro. E o limite
+      # de memória abaixo precisa acomodar os 14 somados: com 1g o supervisor
+      # levava SIGKILL (status 137) e reiniciava tudo em loop infinito.
+      NODE_OPTIONS: "--max_old_space_size=${WORKER_MAX_OLD_SPACE:-256}"
     deploy:
       resources:
         limits:
-          memory: ${WORKER_MEMORY:-1g}
+          memory: ${WORKER_MEMORY:-2560m}
     networks:
       - main
       - javascript-executor-network
