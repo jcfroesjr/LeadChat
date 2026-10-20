@@ -140,14 +140,18 @@ services:
       resources:
         limits:
           memory: ${BUILDER_MEMORY:-2g}
-    # A raiz sempre responde (200 ou redirect de auth). /api/health não existe
-    # em todas as versões da imagem e deixava o container unhealthy — o que faz
-    # o proxy do EasyPanel tirar o serviço do roteamento e o site "não abrir".
+    # A imagem não traz curl nem wget: o healthcheck original falhava no exec
+    # (ExitCode -1), nunca chegava a testar o app, e o container ficava
+    # unhealthy para sempre — fazendo o proxy do EasyPanel tirá-lo do
+    # roteamento. Usamos o próprio Node, que a imagem obviamente tem.
+    # Qualquer resposta HTTP serve: significa que o servidor está de pé.
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "curl -fsS -o /dev/null http://127.0.0.1:3000/ || exit 1",
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
         ]
       interval: 30s
       timeout: 10s
