@@ -140,18 +140,20 @@ services:
       resources:
         limits:
           memory: ${BUILDER_MEMORY:-2g}
-    # A imagem não traz curl nem wget: o healthcheck original falhava no exec
-    # (ExitCode -1), nunca chegava a testar o app, e o container ficava
-    # unhealthy para sempre — fazendo o proxy do EasyPanel tirá-lo do
-    # roteamento. Usamos o próprio Node, que a imagem obviamente tem.
-    # Qualquer resposta HTTP serve: significa que o servidor está de pé.
+    # Dois detalhes desta imagem quebravam o healthcheck padrão:
+    #  1. não há curl nem wget instalados (o exec falhava com ExitCode -1);
+    #  2. o Next escuta no hostname do container, não em 127.0.0.1, então
+    #     testar o loopback dava ECONNREFUSED com o app no ar.
+    # Resultado: container unhealthy para sempre e o proxy do EasyPanel
+    # tirando o serviço do roteamento. Usamos o Node da própria imagem
+    # apontando para $HOSTNAME. Qualquer resposta < 500 significa de pé.
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
+          "require('http').get('http://'+(process.env.HOSTNAME||'127.0.0.1')+':3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
         ]
       interval: 30s
       timeout: 10s
