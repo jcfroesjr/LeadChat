@@ -136,12 +136,23 @@ services:
     restart: unless-stopped
     environment:
       <<: *common-vars
+    deploy:
+      resources:
+        limits:
+          memory: ${BUILDER_MEMORY:-2g}
+    # A raiz sempre responde (200 ou redirect de auth). /api/health não existe
+    # em todas as versões da imagem e deixava o container unhealthy — o que faz
+    # o proxy do EasyPanel tirar o serviço do roteamento e o site "não abrir".
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -o /dev/null http://127.0.0.1:3000/ || exit 1",
+        ]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 120s
 
   # Processa filas BullMQ. Sem domínio.
   worker:
@@ -151,6 +162,13 @@ services:
     command: ["worker", "all"]
     environment:
       <<: *common-vars
+      # Heap próprio: o worker herdava 2048M do *common-vars e chegou a 3.2 GiB
+      # residentes numa VPS de 8 GB, empurrando a máquina para o swap.
+      NODE_OPTIONS: "--max_old_space_size=${WORKER_MAX_OLD_SPACE:-768}"
+    deploy:
+      resources:
+        limits:
+          memory: ${WORKER_MEMORY:-1g}
     networks:
       - main
       - javascript-executor-network
@@ -213,6 +231,11 @@ services:
       "
     environment:
       <<: *common-vars
+      NODE_OPTIONS: "--max_old_space_size=${REALTIME_MAX_OLD_SPACE:-512}"
+    deploy:
+      resources:
+        limits:
+          memory: ${REALTIME_MEMORY:-768m}
 
   # ---- Ferramentas opcionais (perfil "tools") --------------------------
   # Suba com: docker compose --profile tools up -d
