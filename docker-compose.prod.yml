@@ -136,24 +136,26 @@ services:
     restart: unless-stopped
     environment:
       <<: *common-vars
+      # O Next standalone usa process.env.HOSTNAME como enderecho de bind e o
+      # Docker preenche essa variável com o ID do container. Com o builder em
+      # várias redes (main, default, easypanel) ele escutava só na interface
+      # de uma delas e o proxy do EasyPanel recebia 502. 0.0.0.0 = todas.
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
     deploy:
       resources:
         limits:
           memory: ${BUILDER_MEMORY:-2g}
-    # Dois detalhes desta imagem quebravam o healthcheck padrão:
-    #  1. não há curl nem wget instalados (o exec falhava com ExitCode -1);
-    #  2. o Next escuta no hostname do container, não em 127.0.0.1, então
-    #     testar o loopback dava ECONNREFUSED com o app no ar.
-    # Resultado: container unhealthy para sempre e o proxy do EasyPanel
-    # tirando o serviço do roteamento. Usamos o Node da própria imagem
-    # apontando para $HOSTNAME. Qualquer resposta < 500 significa de pé.
+    # A imagem não traz curl nem wget (o exec falhava com ExitCode -1), então
+    # sondamos com o Node da própria imagem. Com HOSTNAME=0.0.0.0 acima o app
+    # passa a escutar em todas as interfaces e o loopback volta a responder.
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "require('http').get('http://'+(process.env.HOSTNAME||'127.0.0.1')+':3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
+          "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
         ]
       interval: 30s
       timeout: 10s
