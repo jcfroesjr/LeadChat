@@ -31,7 +31,13 @@ x-environment: &common-vars
   NEXT_PUBLIC_ASSET_URL: https://${S3_DOMAIN:?defina S3_DOMAIN no .env}/${S3_BUCKET:-chatbotx}/
   NEXT_PUBLIC_BUILDER_URL: https://${APP_DOMAIN}
   NEXT_PUBLIC_REALTIME_URL: https://${REALTIME_DOMAIN:?defina REALTIME_DOMAIN no .env}
-  NEXT_PUBLIC_EDITION: community
+  NEXT_PUBLIC_EDITION: ${NEXT_PUBLIC_EDITION:-community}
+  # Conta com acesso ao painel de plataforma em /manage, onde ficam as
+  # credenciais de Meta/Google/TikTok sem as quais os canais ficam desativados.
+  # Sem esta variável o painel simplesmente não abre para ninguém.
+  PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:?defina PLATFORM_ADMIN_EMAIL no .env}
+  LICENSE_KEY: ${LICENSE_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
   NODE_OPTIONS: "--max_old_space_size=${NODE_MAX_OLD_SPACE:-2048}"
   REALTIME_API_KEY: ${REALTIME_API_KEY:?defina REALTIME_API_KEY no .env}
   REALTIME_BROADCAST_SECRET: ${REALTIME_BROADCAST_SECRET:?defina REALTIME_BROADCAST_SECRET no .env}
