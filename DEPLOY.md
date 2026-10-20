@@ -27,7 +27,8 @@ curl -sSL https://get.easypanel.io | sh
 
 ## 2. DNS
 
-Crie três registros `A` apontando para o IP da VPS:
+Crie três registros `A` apontando para o IP da VPS. São três porque o
+realtime (WebSocket) e o storage respondem em hosts separados do app.
 
 | Subdomínio | Aponta para | Serviço | Porta interna |
 |---|---|---|---|
@@ -36,6 +37,14 @@ Crie três registros `A` apontando para o IP da VPS:
 | `s3.seudominio.com` | IP da VPS | `filesystem` | 9000 |
 
 Espere a propagação antes de emitir os certificados (`dig app.seudominio.com`).
+
+> Trocar de domínio depois do primeiro deploy exige atualizar `APP_DOMAIN`,
+> `REALTIME_DOMAIN` e `S3_DOMAIN` **juntos** e refazer o deploy. Elas alimentam
+> `BETTER_AUTH_URL` e as `NEXT_PUBLIC_*`, que vão embutidas no build do
+> frontend — mudar só uma deixa login ou uploads quebrados.
+>
+> Lembre de atualizar tambem as URLs registradas nos apps da Meta/Google
+> (OAuth redirect e webhook), que apontam para o domínio antigo.
 
 ---
 
